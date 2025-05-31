@@ -1,0 +1,93 @@
+pipeline {
+  agent any
+
+  environment {
+    TF_VERSION       = "1.5.0"
+    AWS_REGION       = "us-east-1"
+    BACKEND_BUCKET   = "trs-terraform-state"
+    TF_VAR_file      = "east1.tfvars"
+    WORK_DIR         = "trs-architecture"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        echo "Checking out code..."
+        checkout scm
+      }
+    }
+
+    stage('Init Terraform') {
+      steps {
+        dir("${WORK_DIR}") {
+          script {
+            withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+              sh """
+                terraform --version || tfenv install ${TF_VERSION}
+                terraform init -input=false
+              """
+            }
+          }
+        }
+      }
+    }
+
+    stage('Validate Terraform') {
+      steps {
+        dir("${WORK_DIR}") {
+          sh "terraform validate"
+        }
+      }
+    }
+
+    stage('Plan Terraform') {
+      steps {
+        dir("${WORK_DIR}") {
+          sh "terraform plan -var-file=${TF_VAR_file} -out=tfplan"
+        }
+      }
+    }
+
+    stage('Approve Apply') {
+      when {
+        branch 'main'
+      }
+      steps {
+        timeout(time: 5, unit: 'MINUTES') {
+          input message: 'Do you approve applying this Terraform plan?'
+        }
+      }
+    }
+
+    stage('Apply Terraform') {
+      when {
+        branch 'main'
+      }
+      steps {
+        dir("${WORK_DIR}") {
+          sh "terraform apply -auto-approve tfplan"
+        }
+      }
+    }
+
+    stage('Output Resources') {
+      steps {
+        dir("${WORK_DIR}") {
+          sh "terraform output"
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      echo 'Cleaning up workspace...'
+      cleanWs()
+    }
+    failure {
+      mail to: 'devops@example.com',
+           subject: "Terraform Deploy Failed: ${env.JOB_NAME} [${env.BUILD_NUMBER}]",
+           body: "Check Jenkins job: ${env.BUILD_URL}"
+    }
+  }
+}
